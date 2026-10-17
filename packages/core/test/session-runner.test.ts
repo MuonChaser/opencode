@@ -1224,7 +1224,7 @@ describe("SessionRunnerLLM", () => {
     yield* Fiber.join(running)
 
     expect(s.requests).toHaveLength(3)
-    expect(userTexts(s.requests[2])).toContain("Background work completed")
+    expect(userTexts(s.requests[2])).toContainEqual(expect.stringContaining("Background work completed"))
   })
 
   scenario("streams one request with registry definitions from chronological user history", function* (s) {
@@ -2346,7 +2346,7 @@ describe("SessionRunnerLLM", () => {
 
     expect(s.requests).toHaveLength(4)
     expect(userTexts(s.requests[1])).toContain("Steer after compaction")
-    expect(userTexts(s.requests[1])).toContain("Completion after compaction")
+    expect(userTexts(s.requests[1])).toContainEqual(expect.stringContaining("Completion after compaction"))
     expect(userTexts(s.requests[3])).toContain("Queue after compaction")
     expect(yield* SessionInbox.find(s.db, first.id)).toBeUndefined()
     expect((yield* s.messages).find((message) => message.id === first.id)).toMatchObject({
@@ -4351,14 +4351,14 @@ describe("SessionRunnerLLM", () => {
       "Queue first",
       "Steer before next queued input",
       "Also steer before next queued input",
-      "Background completion before next queued input",
+      expect.stringContaining("Background completion before next queued input"),
     ])
     expect(userTexts(s.requests[3])).toEqual([
       "Start working",
       "Queue first",
       "Steer before next queued input",
       "Also steer before next queued input",
-      "Background completion before next queued input",
+      expect.stringContaining("Background completion before next queued input"),
       "Queue second",
     ])
   })
@@ -5622,7 +5622,7 @@ describe("SessionRunnerLLM", () => {
       })
       expect(s.requests[1]?.messages.at(-1)).toMatchObject({
         role: "user",
-        content: [{ type: "text", text: nudge }],
+        content: [{ type: "text", text: expect.stringContaining(nudge) }],
       })
       expect(yield* s.context).toMatchObject([
         { type: "user" },
@@ -5687,13 +5687,15 @@ describe("SessionRunnerLLM", () => {
 
   scenario("continues an incomplete stream after observable text", function* (s) {
     const failure = incompleteStream()
-    yield* s.admit("Continue partial output")
+    const prompt = "Review the changes, but wait for my GO before pushing."
+    const partial = "The changes are ready. Reply GO to approve pushing."
+    yield* s.admit(prompt)
     yield* s.llm.push(
       TestLLM.failAfter(
         failure,
         LLMEvent.stepStart({ index: 0 }),
         LLMEvent.textStart({ id: "partial-rate-limit" }),
-        LLMEvent.textDelta({ id: "partial-rate-limit", text: "Partial" }),
+        LLMEvent.textDelta({ id: "partial-rate-limit", text: partial }),
       ),
     )
     yield* s.llm.push(TestLLM.text(" continuation", "continued-text"))
@@ -5707,21 +5709,29 @@ describe("SessionRunnerLLM", () => {
     expect(s.requests).toHaveLength(2)
     expect(s.requests[1]?.messages.at(-2)).toMatchObject({
       role: "assistant",
-      content: [{ type: "text", text: "Partial" }],
+      content: [{ type: "text", text: partial }],
     })
-    expect(s.requests[1]?.messages.at(-1)).toMatchObject({
-      role: "user",
-      content: [
-        {
-          type: "text",
-          text: INCOMPLETE_STREAM_CONTINUATION,
-        },
-      ],
-    })
+    const continuation = userTexts(s.requests[1]).at(-1)
+    expect(continuation).toContain(INCOMPLETE_STREAM_CONTINUATION)
+    expect(continuation).toContain("not user input or approval")
+    for (const route of [OpenAIChat.route, OpenAIResponses.route, AnthropicMessages.route]) {
+      const compiled = yield* compileRequest(
+        LLMRequest.update(s.requests[1], {
+          model: LanguageModel.make({ id: "fake-model", provider: "fake", route }),
+        }),
+      )
+      const messages = Schema.decodeUnknownSync(Schema.Array(Schema.Unknown))(
+        compiled.body[route === OpenAIResponses.route ? "input" : "messages"],
+      )
+      expect(messages.at(-1)).toMatchObject({ role: "user" })
+      const text = JSON.stringify(messages.at(-1))
+      expect(text).toContain("not user input or approval")
+      expect(text).toContain(INCOMPLETE_STREAM_CONTINUATION)
+    }
     const context = yield* s.context
     expect(context).toMatchObject([
-      Expected.user("Continue partial output"),
-      Expected.assistant({ finish: "error", error: { type: "provider.invalid-output" } }, [Expected.text("Partial")]),
+      Expected.user(prompt),
+      Expected.assistant({ finish: "error", error: { type: "provider.invalid-output" } }, [Expected.text(partial)]),
       {
         type: "synthetic",
         text: INCOMPLETE_STREAM_CONTINUATION,
@@ -5757,7 +5767,7 @@ describe("SessionRunnerLLM", () => {
     expect(s.requests).toHaveLength(2)
     expect(s.requests[1]?.messages.at(-1)).toMatchObject({
       role: "user",
-      content: [{ type: "text", text: INCOMPLETE_STREAM_CONTINUATION }],
+      content: [{ type: "text", text: expect.stringContaining(INCOMPLETE_STREAM_CONTINUATION) }],
     })
     expect(yield* s.context).toMatchObject([
       { type: "user" },
@@ -5794,7 +5804,7 @@ describe("SessionRunnerLLM", () => {
     })
     expect(s.requests[1]?.messages.at(-1)).toMatchObject({
       role: "user",
-      content: [{ type: "text", text: INCOMPLETE_STREAM_CONTINUATION }],
+      content: [{ type: "text", text: expect.stringContaining(INCOMPLETE_STREAM_CONTINUATION) }],
     })
     expect(yield* recordedEventTypes(sessionID)).toContain("session.retry.scheduled.1")
     expect(yield* s.context).toMatchObject([
@@ -5827,7 +5837,7 @@ describe("SessionRunnerLLM", () => {
     expect(s.requests).toHaveLength(2)
     expect(s.requests[1]?.messages.at(-1)).toMatchObject({
       role: "user",
-      content: [{ type: "text", text: INCOMPLETE_STREAM_CONTINUATION }],
+      content: [{ type: "text", text: expect.stringContaining(INCOMPLETE_STREAM_CONTINUATION) }],
     })
     expect(yield* s.context).toMatchObject([
       Expected.user("Continue after unknown failure"),
@@ -5864,7 +5874,7 @@ describe("SessionRunnerLLM", () => {
       content: [
         {
           type: "text",
-          text: INCOMPLETE_STREAM_CONTINUATION,
+          text: expect.stringContaining(INCOMPLETE_STREAM_CONTINUATION),
         },
       ],
     })
@@ -5903,7 +5913,7 @@ describe("SessionRunnerLLM", () => {
       expect(yield* recordedEventTypes(sessionID)).toContain("session.retry.scheduled.1")
       expect(s.requests[1]?.messages.slice(-2)).toMatchObject([
         { role: "user", content: [{ type: "text", text: "Recover disconnected reasoning" }] },
-        { role: "user", content: [{ type: "text", text: INCOMPLETE_STREAM_CONTINUATION }] },
+        { role: "user", content: [{ type: "text", text: expect.stringContaining(INCOMPLETE_STREAM_CONTINUATION) }] },
       ])
       expect(yield* s.context).toMatchObject([
         { type: "user" },
@@ -5949,7 +5959,7 @@ describe("SessionRunnerLLM", () => {
         content: [
           {
             type: "text",
-            text: INCOMPLETE_STREAM_CONTINUATION,
+            text: expect.stringContaining(INCOMPLETE_STREAM_CONTINUATION),
           },
         ],
       },
